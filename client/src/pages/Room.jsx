@@ -44,8 +44,17 @@ function RemoteVideo({ peerId, stream }) {
 }
 
 export default function Room({ roomId, onLeave }) {
-  const { localVideoRef, remoteStreams, participants, status, hasCamera } =
-    useWebRTC(roomId);
+  const {
+    localVideoRef,
+    remoteStreams,
+    participants,
+    status,
+    hasCamera,
+    isMuted,
+    isCameraOff,
+    toggleAudio,
+    toggleVideo,
+  } = useWebRTC(roomId);
 
   const totalPeers = participants.length + 1; // +1 for self
 
@@ -101,6 +110,15 @@ export default function Room({ roomId, onLeave }) {
               <span>Waiting for camera…</span>
             </div>
           )}
+          {isCameraOff && (
+            <div className="video-placeholder camera-off">
+              <span className="icon">🚫</span>
+              <span>Camera Off</span>
+            </div>
+          )}
+          <div className="video-status-icons">
+            {isMuted && <span className="status-icon muted">🔇</span>}
+          </div>
           <span className="video-label">You</span>
         </div>
 
@@ -112,6 +130,31 @@ export default function Room({ roomId, onLeave }) {
             stream={remoteStreams.get(peerId) || null}
           />
         ))}
+      </div>
+
+      {/* Control Bar */}
+      <div className="control-bar">
+        <button
+          className={`btn-control ${isMuted ? "active" : ""}`}
+          onClick={toggleAudio}
+          title={isMuted ? "Unmute Mic" : "Mute Mic"}
+        >
+          {isMuted ? "🔇" : "🎤"}
+        </button>
+        <button
+          className={`btn-control ${isCameraOff ? "active" : ""}`}
+          onClick={toggleVideo}
+          title={isCameraOff ? "Turn Camera On" : "Turn Camera Off"}
+        >
+          {isCameraOff ? "🚫" : "📷"}
+        </button>
+        <button
+          className="btn-control btn-danger"
+          onClick={onLeave}
+          title="Leave Call"
+        >
+          📞
+        </button>
       </div>
 
       {/* Invite panel */}

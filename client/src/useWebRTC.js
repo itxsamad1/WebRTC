@@ -52,6 +52,10 @@ export function useWebRTC(roomId) {
   const [remoteStreams, setRemoteStreams] = useState(new Map()); // Map<peerId, MediaStream>
   const [participants, setParticipants]  = useState([]);        // peerId[]
 
+  // ── Mute/Unmute State
+  const [isMuted, setIsMuted] = useState(false);
+  const [isCameraOff, setIsCameraOff] = useState(false);
+
   // ── Helper: send JSON to signaling server
   function sendSignal(msg) {
     if (webSocket.current?.readyState === WebSocket.OPEN) {
@@ -108,7 +112,7 @@ export function useWebRTC(roomId) {
       }
     };
 
-    // When the remote peer's video/audio tracks arrive — update state
+    // When the remote peerss video/audio tracks arrive — update state
     pc.ontrack = (event) => {
       console.log(`[ontrack] Track received from ${remotePeerId.slice(0,6)}`, event.streams);
       const stream = event.streams?.[0];
@@ -140,6 +144,28 @@ export function useWebRTC(roomId) {
     iceCandidateQueues.current.delete(peerId);
     setRemoteStreams((prev) => { const n = new Map(prev); n.delete(peerId); return n; });
     setParticipants((prev) => prev.filter((id) => id !== peerId));
+  }
+
+  // ── Toggle Audio (Mute/Unmute)
+  function toggleAudio() {
+    if (localStream.current) {
+      const audioTrack = localStream.current.getAudioTracks()[0];
+      if (audioTrack) {
+        audioTrack.enabled = !audioTrack.enabled;
+        setIsMuted(!audioTrack.enabled);
+      }
+    }
+  }
+
+  // ── Toggle Video (Camera On/Off)
+  function toggleVideo() {
+    if (localStream.current) {
+      const videoTrack = localStream.current.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.enabled = !videoTrack.enabled;
+        setIsCameraOff(!videoTrack.enabled);
+      }
+    }
   }
 
   useEffect(() => {
@@ -280,5 +306,9 @@ export function useWebRTC(roomId) {
     status,
     hasCamera,
     myPeerId: myPeerId.current,
+    isMuted,
+    isCameraOff,
+    toggleAudio,
+    toggleVideo,
   };
 }

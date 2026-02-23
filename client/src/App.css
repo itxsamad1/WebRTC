@@ -552,6 +552,38 @@ body {
   /* mirror effect */
 }
 
+/* ── Media Status Icons (Mute, etc) */
+.video-status-icons {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.status-icon {
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(8px);
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 0.9rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.status-icon.muted {
+  color: var(--red);
+}
+
+.video-placeholder.camera-off {
+  background: var(--surface2);
+  z-index: 5;
+}
+
 .video-label {
   position: absolute;
   bottom: 10px;
@@ -564,6 +596,7 @@ body {
   font-weight: 500;
   color: #fff;
   pointer-events: none;
+  z-index: 6;
 }
 
 .video-placeholder {
@@ -581,6 +614,57 @@ body {
 .video-placeholder .icon {
   font-size: 2.5rem;
   opacity: 0.3;
+}
+
+/* ── Control Bar */
+.control-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: rgba(22, 24, 39, 0.8);
+  backdrop-filter: blur(12px);
+  padding: 12px 24px;
+  border-radius: 50px;
+  border: 1px solid var(--surface3);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+  margin-top: 8px;
+  z-index: 100;
+}
+
+.btn-control {
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--surface3);
+  background: var(--surface2);
+  color: var(--text);
+  font-size: 1.2rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-control:hover {
+  background: var(--surface3);
+  transform: translateY(-2px);
+}
+
+.btn-control.active {
+  background: var(--red);
+  border-color: var(--red);
+  color: white;
+}
+
+.btn-control.btn-danger {
+  background: var(--red);
+  border-color: var(--red);
+  margin-left: 8px;
+}
+
+.btn-control.btn-danger:hover {
+  filter: brightness(1.2);
 }
 
 /* ---- Info box ---- */
