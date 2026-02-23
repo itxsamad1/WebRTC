@@ -1,26 +1,41 @@
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useCallback } from "react";
 import { useWebRTC } from "../useWebRTC";
 import "../App.css";
 
-// A single remote video tile — uses a ref to set srcObject
+// RemoteVideo: Renders a single remote peer's video stream.
+// Uses THREE mechanisms to ensure srcObject always gets set:
+//   1. ref callback (fires on mount/unmount)
+//   2. useEffect watching the stream prop (fires when stream arrives later)
+//   3. Direct check in the ref callback (fires if stream already there on mount)
 function RemoteVideo({ peerId, stream }) {
   const videoRef = useRef(null);
+  const shortId  = peerId.slice(0, 6);
 
+  // Mechanism 1 & 3: ref callback — runs whenever DOM element mounts/unmounts
+  const setVideoRef = useCallback(
+    (element) => {
+      videoRef.current = element;
+      if (element && stream) {
+        element.srcObject = stream;
+      }
+    },
+    [stream]
+  );
+
+  // Mechanism 2: stream prop changed (arrive late, or stream replaced)
   useEffect(() => {
     if (videoRef.current && stream) {
       videoRef.current.srcObject = stream;
     }
   }, [stream]);
 
-  const shortId = peerId.slice(0, 6);
-
   return (
     <div className="video-card remote">
-      <video ref={videoRef} autoPlay playsInline />
+      <video ref={setVideoRef} autoPlay playsInline />
       {!stream && (
         <div className="video-placeholder">
           <span className="icon">👤</span>
-          <span>Connecting...</span>
+          <span>Connecting {shortId}…</span>
         </div>
       )}
       <span className="video-label">{shortId}</span>
@@ -37,7 +52,6 @@ export default function Room({ roomId, onLeave }) {
   function copyLink() {
     const url = `${window.location.protocol}//${window.location.host}/?room=${roomId}`;
     navigator.clipboard.writeText(url).then(() => {
-      // Simple visual feedback
       const btn = document.getElementById("copy-btn");
       if (btn) {
         btn.textContent = "✅ Copied!";
@@ -46,14 +60,10 @@ export default function Room({ roomId, onLeave }) {
     });
   }
 
-  // Derive status color class
-  const statusClass = status.startsWith("Call connected") || status.startsWith("Connecting")
-    ? "calling"
-    : status.includes("blocked") || status.includes("Cannot")
-    ? "error"
-    : status.startsWith("You are the first")
-    ? "connected"
-    : "";
+  const statusClass =
+    status.startsWith("📞") ? "calling" :
+    status.startsWith("❌") ? "error" :
+    status.startsWith("You") ? "connected" : "";
 
   return (
     <div className="app">
@@ -76,46 +86,43 @@ export default function Room({ roomId, onLeave }) {
         </div>
       </div>
 
-      {/* Status */}
+      {/* Status bar */}
       <div className={`status-bar ${statusClass}`}>{status}</div>
 
-      {/* Video grid */}
+      {/* Video grid — adapts by total peer count */}
       <div className={`video-grid peers-${Math.min(totalPeers, 9)}`}>
-        {/* Local tile (always first) */}
+
+        {/* Local video tile */}
         <div className="video-card local">
           <video ref={localVideoRef} autoPlay playsInline muted />
           {!hasCamera && (
             <div className="video-placeholder">
               <span className="icon">📷</span>
-              <span>Waiting for camera...</span>
+              <span>Waiting for camera…</span>
             </div>
           )}
           <span className="video-label">You</span>
         </div>
 
-        {/* Remote tiles — one per participant */}
+        {/* One tile per remote participant */}
         {participants.map((peerId) => (
           <RemoteVideo
             key={peerId}
             peerId={peerId}
-            stream={remoteStreams.get(peerId)}
+            stream={remoteStreams.get(peerId) || null}
           />
         ))}
       </div>
 
-      {/* Share panel */}
+      {/* Invite panel */}
       <div className="info-box">
         <strong>Invite others to this call:</strong>
         <br />
-        Share this link — anyone who opens it joins instantly:
+        Anyone who opens this link joins instantly — no app needed:
         <br />
         <code className="share-url">
           {window.location.protocol}//{window.location.host}/?room={roomId}
         </code>
-        <br />
-        <br />
-        <strong>Tip:</strong> Multiple rooms can run at the same time — each has its own link.
-        You can also create more rooms from the home page.
       </div>
     </div>
   );

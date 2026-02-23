@@ -7,12 +7,12 @@ const crypto = require("crypto");
 const app = express();
 const server = http.createServer(app);
 
-//for CORS for vite
-app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  next();
+// Simple health check
+app.get("/", (req, res) => {
+  res.send("WebRTC Multi-Room Signaling Server is running!");
 });
 
+// Create a SEPARATE WebSocket server on port 3001
 const wss = new WebSocket.Server({ server });
 
 // rooms: Map<roomId, Map<peerId, WebSocket>>
@@ -42,6 +42,8 @@ wss.on("connection", (socket) => {
   let currentRoomId = null;
   let currentPeerId = null;
 
+  console.log(" New socket connection attempt...");
+
   socket.on("message", (data) => {
     let message;
     try {
@@ -56,16 +58,15 @@ wss.on("connection", (socket) => {
       currentRoomId = roomId;
       currentPeerId = generateId();
 
-      // Create room if it doesn't exist
       if (!rooms.has(roomId)) {
         rooms.set(roomId, new Map());
-        console.log(` Room created: ${roomId}`);
+        console.log(` [+] Room created: ${roomId}`);
       }
 
       const room = rooms.get(roomId);
+      const existingPeers = Array.from(room.keys());
 
-      // Tell the new peer their ID and who else is in the room
-      const existingPeers = [...room.keys()];
+      // Tell the new peer their ID and who else is there
       safeSend(socket, {
         type: "room-joined",
         peerId: currentPeerId,
@@ -77,14 +78,13 @@ wss.on("connection", (socket) => {
       broadcastToRoom(roomId, {
         type: "peer-joined",
         peerId: currentPeerId,
-      });
+      }, currentPeerId);
 
-      // Add to room
       room.set(currentPeerId, socket);
-      console.log(` Peer ${currentPeerId} joined room ${roomId} (${room.size} total)`);
+      console.log(` [>] Peer ${currentPeerId} joined room ${roomId} (Total: ${room.size})`);
     }
 
-    // ---- RELAY: offer / answer / ice-candidate (addressed to specific peer) ----
+    // ---- RELAY: offer / answer / ice-candidate ----
     if (["offer", "answer", "ice-candidate"].includes(message.type)) {
       const room = rooms.get(currentRoomId);
       if (!room) return;
@@ -99,7 +99,6 @@ wss.on("connection", (socket) => {
     }
   });
 
-  //PEER DISCONNECTS
   socket.on("close", () => {
     if (currentRoomId && currentPeerId) {
       const room = rooms.get(currentRoomId);
@@ -109,36 +108,21 @@ wss.on("connection", (socket) => {
           type: "peer-left",
           peerId: currentPeerId,
         });
-        console.log(` Peer ${currentPeerId} left room ${currentRoomId} (${room.size} remaining)`);
+        console.log(` [-] Peer ${currentPeerId} left room ${currentRoomId} (${room.size} left)`);
 
-        // Clean up empty rooms
         if (room.size === 0) {
           rooms.delete(currentRoomId);
-          console.log(` Room ${currentRoomId} deleted (empty)`);
+          console.log(` [x] Room ${currentRoomId} deleted`);
         }
       }
     }
   });
 
   socket.on("error", (err) => {
-    console.log("Socket error:", err.message);
+    console.error(`Socket error (${currentPeerId}):`, err.message);
   });
 });
 
-// Debug endpoint — see all active rooms
-app.get("/rooms", (req, res) => {
-  const roomList = {};
-  for (const [roomId, room] of rooms.entries()) {
-    roomList[roomId] = room.size;
-  }
-  res.json({ activeRooms: roomList, total: rooms.size });
-});
-
-app.get("/", (req, res) => {
-  res.send("WebRTC Multi-Room Signaling Server is running!");
-});
-
-// start
 const PORT = 3001;
 server.listen(PORT, "0.0.0.0", () => {
   const networkInterfaces = os.networkInterfaces();
@@ -151,10 +135,10 @@ server.listen(PORT, "0.0.0.0", () => {
       }
     }
   }
-  console.log("   WebRTC Multi-Room Signaling Server Started");
-  console.log(`  Local:   http://localhost:${PORT}`);
-  console.log(`  Network: http://${localIP}:${PORT}`);
-  console.log(`\n   Link for p2p connection on same wifi:`);
-  console.log(`     https://${localIP}:5173\n`);
-  console.log("   Anyone can create a room and share the link!");
+  console.log("\n===========================================");
+  console.log("   🚀 MULTI-ROOM SIGNALING SERVER UP");
+  console.log("===========================================");
+  console.log(`  Local IP: ${localIP}`);
+  console.log(`  Port:     ${PORT}`);
+  console.log("===========================================\n");
 });

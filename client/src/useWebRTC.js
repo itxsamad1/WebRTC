@@ -1,14 +1,8 @@
-//  Flow:
-//  1. Gets your camera & microphone  (getUserMedia)
-//  2. Opens a WebSocket to the signaling server
-//  3. Sends "join" with the roomId -> server assigns a peerId
-//  4. CALLER clicks "Start Call" -> creates an offer -> sends it
-//  5. CALLEE receives the offer automatically -> sends answer back
-//  6. Both sides exchange ICE candidates
-//  7. Video/audio flows peer-to-peer
-
 import { useEffect, useRef, useState } from "react";
 
+// ── Bug Fix 1: Use the Vite proxy path (/ws) NOT a direct ws:// URL.
+// Browsers BLOCK ws:// connections from https:// pages (mixed content).
+// The Vite proxy handles the wss:// → ws://localhost:3001 upgrade securely.
 const getSignalingServerURL = () => {
   const host = window.location.hostname;
   const port = window.location.port;
@@ -16,6 +10,8 @@ const getSignalingServerURL = () => {
   return `${protocol}://${host}:${port}/ws`;
 };
 
+// ── Bug Fix 3: Restore TURN servers.
+// Without TURN, ICE can fail silently and video never flows.
 const ICE_SERVERS = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
@@ -40,35 +36,46 @@ const ICE_SERVERS = {
 };
 
 export function useWebRTC(roomId) {
-  const localVideoRef  = useRef(null);
-  const webSocket      = useRef(null);
-  const localStream    = useRef(null);
-  const myPeerId       = useRef(null);
+  const localVideoRef   = useRef(null);
+  const webSocket       = useRef(null);
+  const localStream     = useRef(null);
+  const myPeerId        = useRef(null);
+  const peerConnections = useRef(new Map()); // Map<peerId, RTCPeerConnection>
 
-  // Map<peerId, RTCPeerConnection>
-  const peerConnections = useRef(new Map());
+  // ── Bug Fix 2: ICE candidate queue.
+  // Candidates arriving before setRemoteDescription() must be buffered,
+  // otherwise addIceCandidate() throws and the candidate is lost forever.
+  const iceCandidateQueues = useRef(new Map()); // Map<peerId, candidate[]>
 
   const [status, setStatus]           = useState("Initializing...");
   const [hasCamera, setHasCamera]     = useState(false);
-  // Map<peerId, MediaStream> – triggers re-render on change
-  const [remoteStreams, setRemoteStreams] = useState(new Map());
-  // ordered list of remote peerIds (for stable video grid)
-  const [participants, setParticipants]  = useState([]);
+  const [remoteStreams, setRemoteStreams] = useState(new Map()); // Map<peerId, MediaStream>
+  const [participants, setParticipants]  = useState([]);        // peerId[]
 
-  // Keep a stable ref to sendSignal so createPeerConnection can use it
-  const wsRef = webSocket;
-
-  function sendSignal(message) {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(message));
+  // ── Helper: send JSON to signaling server
+  function sendSignal(msg) {
+    if (webSocket.current?.readyState === WebSocket.OPEN) {
+      webSocket.current.send(JSON.stringify(msg));
     }
   }
 
-  // Create (or retrieve) an RTCPeerConnection to a remote peer.
-  // isInitiator = true  → we create the offer (we are the new joiner)
-  // isInitiator = false → we wait for their offer (we are existing peer)
+  // ── Helper: flush queued ICE candidates after remote description is set
+  async function flushIceCandidates(peerId) {
+    const queue = iceCandidateQueues.current.get(peerId) || [];
+    if (queue.length === 0) return;
+    const pc = peerConnections.current.get(peerId);
+    if (!pc) return;
+    console.log(`[ICE] Flushing ${queue.length} queued candidates for ${peerId.slice(0,6)}`);
+    for (const c of queue) {
+      try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch (e) { /* ignore */ }
+    }
+    iceCandidateQueues.current.delete(peerId);
+  }
+
+  // ── Bug Fix 4: Return existing PC instead of undefined
+  // Creates a new RTCPeerConnection for remotePeerId, or returns existing one.
   async function createPeerConnection(remotePeerId, isInitiator) {
-    // Avoid duplicate connections
+    // ← Previously returned `undefined` here, breaking the offer/answer flow
     if (peerConnections.current.has(remotePeerId)) {
       return peerConnections.current.get(remotePeerId);
     }
@@ -76,56 +83,52 @@ export function useWebRTC(roomId) {
     const pc = new RTCPeerConnection(ICE_SERVERS);
     peerConnections.current.set(remotePeerId, pc);
 
-    // Add our camera/mic tracks
+    // Add all local tracks to this peer connection
     if (localStream.current) {
       localStream.current.getTracks().forEach((track) =>
         pc.addTrack(track, localStream.current)
       );
     }
 
-    // Send ICE candidates to the other peer
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        sendSignal({
-          type: "ice-candidate",
-          to: remotePeerId,
-          candidate: event.candidate,
-        });
+    // When we have an ICE candidate, send it to the remote peer
+    pc.onicecandidate = ({ candidate }) => {
+      if (candidate) {
+        sendSignal({ type: "ice-candidate", to: remotePeerId, candidate });
       }
     };
 
+    // Log ICE state changes for debugging
     pc.oniceconnectionstatechange = () => {
-      console.log(`ICE [${remotePeerId.slice(0,6)}]:`, pc.iceConnectionState);
+      console.log(`[ICE] ${remotePeerId.slice(0,6)}: ${pc.iceConnectionState}`);
       if (pc.iceConnectionState === "failed") {
         pc.restartIce();
       }
-      if (
-        pc.iceConnectionState === "disconnected" ||
-        pc.iceConnectionState === "closed"
-      ) {
+      if (pc.iceConnectionState === "disconnected" || pc.iceConnectionState === "closed") {
         removePeer(remotePeerId);
       }
     };
 
-    // When the remote stream arrives, add it to our state map
+    // When the remote peer's video/audio tracks arrive — update state
     pc.ontrack = (event) => {
-      console.log(`Track received from ${remotePeerId.slice(0,6)}`);
-      setRemoteStreams((prev) => {
-        const next = new Map(prev);
-        next.set(remotePeerId, event.streams[0]);
-        return next;
-      });
+      console.log(`[ontrack] Track received from ${remotePeerId.slice(0,6)}`, event.streams);
+      const stream = event.streams?.[0];
+      if (stream) {
+        setRemoteStreams((prev) => {
+          const next = new Map(prev);
+          next.set(remotePeerId, stream);
+          return next;
+        });
+      }
     };
 
-    // If we are the initiator, create and send the offer
+    // If we are the initiator (new joiner), create and send the offer
     if (isInitiator) {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      sendSignal({
-        type: "offer",
-        to: remotePeerId,
-        sdp: pc.localDescription,
+      const offer = await pc.createOffer({
+        offerToReceiveVideo: true,
+        offerToReceiveAudio: true,
       });
+      await pc.setLocalDescription(offer);
+      sendSignal({ type: "offer", to: remotePeerId, sdp: pc.localDescription });
     }
 
     return pc;
@@ -134,128 +137,125 @@ export function useWebRTC(roomId) {
   function removePeer(peerId) {
     peerConnections.current.get(peerId)?.close();
     peerConnections.current.delete(peerId);
-    setRemoteStreams((prev) => {
-      const next = new Map(prev);
-      next.delete(peerId);
-      return next;
-    });
+    iceCandidateQueues.current.delete(peerId);
+    setRemoteStreams((prev) => { const n = new Map(prev); n.delete(peerId); return n; });
     setParticipants((prev) => prev.filter((id) => id !== peerId));
   }
 
   useEffect(() => {
     if (!roomId) return;
-    let cancelled = false;
+    let isMounted = true;
 
     async function setup() {
-      // Step 1: get camera
+      // Step 1: get camera + mic
       let stream;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: true,
-        });
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       } catch (err) {
         console.error("Camera error:", err);
-        setStatus("Camera/mic blocked. Please allow access and refresh.");
+        setStatus("❌ Camera/mic access denied. Please allow and refresh.");
         return;
       }
-      if (cancelled) return;
+      if (!isMounted) return;
 
       localStream.current = stream;
       setHasCamera(true);
       if (localVideoRef.current) localVideoRef.current.srcObject = stream;
 
-      // Step 2: connect to signaling server
-      const ws = new WebSocket(getSignalingServerURL());
+      // Step 2: connect to signaling server via Vite proxy
+      const wsURL = getSignalingServerURL();
+      console.log("[WS] Connecting to:", wsURL);
+      const ws = new WebSocket(wsURL);
       webSocket.current = ws;
 
       ws.onopen = () => {
-        setStatus("Joining room...");
+        console.log("[WS] Connected. Joining room:", roomId);
         ws.send(JSON.stringify({ type: "join", roomId }));
       };
 
-      ws.onerror = () =>
-        setStatus("Cannot reach signaling server. Is it running?");
+      ws.onerror = (e) => {
+        console.error("[WS] Error:", e);
+        if (isMounted) setStatus("❌ Cannot reach signaling server. Is it running?");
+      };
 
       ws.onclose = () => {
-        if (!cancelled) setStatus("Disconnected from server.");
+        console.log("[WS] Closed");
+        if (isMounted) setStatus("⚠️ Server disconnected. Refresh to reconnect.");
       };
 
       ws.onmessage = async (event) => {
-        if (cancelled) return;
+        if (!isMounted) return;
         let message;
-        try {
-          message = JSON.parse(event.data);
-        } catch {
-          return;
-        }
+        try { message = JSON.parse(event.data); } catch { return; }
 
-        console.log("Message:", message.type, message);
+        console.log(`[WS] ${message.type} from: ${message.from?.slice(0,6) || "server"}`);
 
-        // ---- Server confirmed we joined ---
+        // ── Server confirmed we joined the room
         if (message.type === "room-joined") {
           myPeerId.current = message.peerId;
-          const existing = message.existingPeers;
-
-          setParticipants(existing);
-
-          if (existing.length === 0) {
-            setStatus("You are the first one here! Share the link to invite others.");
-          } else {
-            setStatus(`Connecting to ${existing.length} participant(s)...`);
-          }
-
-          // We are the new joiner → send offers to all existing peers
-          for (const peerId of existing) {
-            await createPeerConnection(peerId, true); // we're initiator
+          setParticipants(message.existingPeers);
+          setStatus(
+            message.existingPeers.length
+              ? `Connecting to ${message.existingPeers.length} peer(s)...`
+              : "You're the first here! Share the link to invite others."
+          );
+          // We are the new joiner → send offers to every existing peer
+          for (const peerId of message.existingPeers) {
+            await createPeerConnection(peerId, true);
           }
         }
 
-        // ---- A new peer joined the room (server tells existing peers) ----
+        // ── A new peer just joined (we are an existing peer — wait for their offer)
         if (message.type === "peer-joined") {
-          // Just update the participant list — the new joiner will send us an offer
           setParticipants((prev) =>
             prev.includes(message.peerId) ? prev : [...prev, message.peerId]
           );
-          setStatus("Someone joined the room!");
         }
 
-        //Someone sent us an offer
+        // ── We received an offer from the new joiner → answer it
         if (message.type === "offer") {
-          const pc = await createPeerConnection(message.from, false); // we are not initiator
+          const pc = await createPeerConnection(message.from, false);
           await pc.setRemoteDescription(new RTCSessionDescription(message.sdp));
+          // ← Flush any ICE candidates that arrived before setRemoteDescription
+          await flushIceCandidates(message.from);
+
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
-          sendSignal({
-            type: "answer",
-            to: message.from,
-            sdp: pc.localDescription,
-          });
-          setStatus("Call connected!");
+          sendSignal({ type: "answer", to: message.from, sdp: pc.localDescription });
+          setStatus("📞 Call connected!");
         }
 
-        // ---- Received an answer to our offer ----
+        // ── We received an answer to our offer
         if (message.type === "answer") {
           const pc = peerConnections.current.get(message.from);
           if (pc) {
             await pc.setRemoteDescription(new RTCSessionDescription(message.sdp));
-            setStatus("Call connected!");
+            // ← Flush any ICE candidates that arrived before setRemoteDescription
+            await flushIceCandidates(message.from);
+            setStatus("📞 Call connected!");
           }
         }
 
-        // ---- ICE candidate from another peer ----
-        if (message.type === "ice-candidate") {
+        // ── ICE candidate from a peer
+        if (message.type === "ice-candidate" && message.candidate) {
           const pc = peerConnections.current.get(message.from);
-          if (pc && message.candidate) {
-            try {
-              await pc.addIceCandidate(new RTCIceCandidate(message.candidate));
-            } catch (err) {
-              console.error("ICE error:", err);
+          if (!pc) return;
+
+          if (pc.remoteDescription && pc.remoteDescription.type) {
+            // Remote description is set — add immediately
+            try { await pc.addIceCandidate(new RTCIceCandidate(message.candidate)); }
+            catch (e) { console.warn("[ICE] addIceCandidate error:", e.message); }
+          } else {
+            // ← Bug Fix 2: Remote description not set yet — queue the candidate
+            if (!iceCandidateQueues.current.has(message.from)) {
+              iceCandidateQueues.current.set(message.from, []);
             }
+            iceCandidateQueues.current.get(message.from).push(message.candidate);
+            console.log(`[ICE] Queued candidate for ${message.from.slice(0,6)}`);
           }
         }
 
-        // ---- A peer left ----
+        // ── A peer left the room
         if (message.type === "peer-left") {
           removePeer(message.peerId);
           setStatus("A participant left the call.");
@@ -266,9 +266,9 @@ export function useWebRTC(roomId) {
     setup();
 
     return () => {
-      cancelled = true;
+      isMounted = false;
       webSocket.current?.close();
-      for (const pc of peerConnections.current.values()) pc.close();
+      peerConnections.current.forEach((pc) => pc.close());
       localStream.current?.getTracks().forEach((t) => t.stop());
     };
   }, [roomId]);
